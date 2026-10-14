@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knight Path Explorer</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --fg: #1a1a1a; --muted: #6b6b6b; --cell: #ffffff; --grid: #c8c8c8;
+    --wall: #111; --visited: #9ecae1; --cur: #4292c6; --legal: #c7e9c0; --legal-b: #31a354;
+    --tower: #d94801; --tower-hatch: rgba(217,72,1,.22); --bad: #de2d26; --panel: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616; --fg: #ececec; --muted: #9a9a9a; --cell: #222; --grid: #444;
+      --wall: #ddd; --visited: #1f4e79; --cur: #3a7fc1; --legal: #234d2a; --legal-b: #5fcf73;
+      --tower: #ff8a3d; --tower-hatch: rgba(255,138,61,.25); --bad: #ff6b6b; --panel: #1e1e1e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+         font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+  .wrap { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  #board { display: grid; grid-template-columns: 24px repeat(8, 64px); grid-template-rows: repeat(8, 64px) 24px; }
+  .cell { position: relative; background: var(--cell); border: 1px solid var(--grid);
+          display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; }
+  .cell.visited { background: var(--visited); }
+  .cell.cur { background: var(--cur); }
+  .cell.legal { background: var(--legal); outline: 2px dashed var(--legal-b); outline-offset: -4px; }
+  .cell .num { font-size: 18px; font-weight: 600; }
+  .cell .hop { position: absolute; top: 2px; left: 4px; font-size: 11px; font-weight: 700; }
+  .cell.tower { box-shadow: inset 0 0 0 4px var(--tower);
+                background-image: repeating-linear-gradient(45deg, transparent 0 6px, var(--tower-hatch) 6px 8px); }
+  .cell .tw { position: absolute; top: 4px; right: 5px; background: var(--tower); color: #fff;
+              font-size: 9px; font-weight: 700; padding: 0 3px; border-radius: 3px; letter-spacing: .5px; }
+  .cell .wrote { font-size: 15px; color: var(--muted); font-style: italic; }
+  .cell .preview { position: absolute; bottom: 2px; right: 4px; font-size: 10px; color: var(--legal-b); }
+  .cell .rid { position: absolute; bottom: 2px; left: 4px; font-size: 9px; color: var(--muted); }
+  .cell.bad .hop { color: var(--bad); }
+  .lbl { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--grid); border-radius: 8px; padding: 12px; min-width: 280px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--grid);
+           background: var(--cell); color: var(--fg); cursor: pointer; }
+  button.on { background: var(--tower); color: #fff; border-color: var(--tower); }
+  input[type=number] { width: 56px; font: inherit; padding: 4px; background: var(--cell); color: var(--fg); border: 1px solid var(--grid); border-radius: 4px; }
+  .stat { font-size: 16px; margin: 6px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { padding: 2px 6px; text-align: left; border-bottom: 1px solid var(--grid); }
+  tr.bad td { color: var(--bad); }
+  .muted { color: var(--muted); font-size: 12px; }
+  #log { max-height: 420px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="board"></div>
+  <div class="panel">
+    <div class="row">
+      <button id="undo">◀ Back (←)</button>
+      <button id="redo">Next ▶ (→)</button>
+      <button id="reset">Reset</button>
+      <button id="towerMode">Tower mode (t)</button>
+      <button id="preset">Load first 3 hops</button>
+      <button id="loadSol">Load K=7 solution</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="free"> free mode (allow illegal hops)</label>
+    </div>
+    <div class="row">
+      <label>K <input type="number" id="K" min="4" max="9" placeholder="?"></label>
+      <label><input type="checkbox" id="rid"> show region ids</label>
+    </div>
+    <div class="stat">Move <b id="mv">0</b><span class="muted" id="ahead"></span> &nbsp; Score <b id="sc">0</b></div>
+    <div class="muted" id="msg"></div>
+    <div class="muted">Towers placed: <span id="tcount">0</span>/13</div>
+    <div id="log"><table><thead><tr><th>#</th><th>to</th><th>type</th><th>score</th></tr></thead><tbody id="steps"></tbody></table></div>
+    <p class="muted">← / → step back / forward through hops. ↑ / Home = start, ↓ / End = end.
+      Click green cell = hop. Tower mode: click cell to put its region's tower there (click again to remove).
+      Tower = orange frame + hatching + TWR tag. Grey italic number = score we computed (not printed on board).
+      Green bottom-right = score after that hop. Red = rule broken (free mode / tower changed).</p>
+  </div>
+</div>
+<script>
+const N = 8;
+// top row first (y=7), same as knight.py
+const BOARD_ROWS = [
+  [null, null, null, null, null,   37, null, 1100],
+  [null, null, null, null, null, null, null, null],
+  [null, null, null,   23, null,  138, null, null],
+  [ 528, null, null, null, null, null, null, null],
+  [null,  449, null, null,   16, null, null, null],
+  [null,  750, null,   88, null,  272,    1, null],
+  [null, null, null, null, null, null, null, null],
+  [   0, null, null, null, null, null, null, null],
+];
+const REGION_ROWS = ["AAAAABBB","CCCDDEEB","CFCDDDEB","GFFHHIEE","GGFHHIIJ","GKFLIIMJ","GKLLLMMJ","KKKLMMJJ"];
+const RECORD_EVERY = 3, RECORD_UNTIL = 18;
+const START = "0,0";
+const SOLUTION = {"K": 7, "path": ["0,0", "2,1", "4,2", "6,2", "7,0", "5,1", "4,3", "4,5", "4,7", "3,5", "2,7", "0,6", "0,4", "1,6", "3,7", "5,7", "3,6", "2,4", "3,2", "1,1", "0,3", "2,3", "4,4", "5,6", "7,6", "5,5", "3,4", "2,2", "0,1", "2,0", "4,0", "6,0", "5,2", "7,2", "7,4", "6,6", "5,4", "4,6", "2,5", "1,3", "0,5", "2,6", "1,4", "0,2", "1,0", "3,1", "1,2", "3,3", "4,1", "5,3", "6,1", "7,3", "6,5", "7,7", "7,5"], "towers": {"0": "3,7", "1": "7,5", "2": "1,6", "3": "4,5", "4": "5,6", "5": "2,3", "6": "0,4", "7": "4,4", "8": "4,2", "9": "7,2", "10": "0,0", "11": "2,1", "12": "4,0"}};  // generated from solutions_K7.json
+
+const key = (x, y) => x + "," + y;
+const NUMBERS = {}, TOWER_ID = {};
+for (let r = 0; r < N; r++) for (let x = 0; x < N; x++) {
+  const y = N - 1 - r;
+  if (BOARD_ROWS[r][x] !== null) NUMBERS[key(x, y)] = BOARD_ROWS[r][x];
+  TOWER_ID[key(x, y)] = REGION_ROWS[r].charCodeAt(x) - 65;
+}
+const isTarget = k => k in NUMBERS && k !== START;
+
+const FLAT = [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]];
+const STRAIGHT = [[2,0],[-2,0],[0,2],[0,-2]];
+
+let path = [START];
+let future = [];  // redo stack: hops ahead of current position, next hop at the end
+let towerLoc = {};  // tower_id -> "x,y"
+let towerMode = false;
+
+const $ = id => document.getElementById(id);
+const getK = () => { const v = parseInt($("K").value, 10); return Number.isFinite(v) ? v : null; };
+const h = k => towerLoc[TOWER_ID[k]] === k ? 1 : 0;
+
+function mustRecord(n) {
+  if (n <= RECORD_UNTIL) return n % RECORD_EVERY === 0;
+  const K = getK();
+  return K === null ? null : (n - RECORD_UNTIL) % K === 0;
+}
+
+// Evaluate hop from a -> b as move n with score s. Returns {ok, score, type, why}
+function evalHop(a, b, n, s, seen) {
+  const [ax, ay] = a.split(",").map(Number), [bx, by] = b.split(",").map(Number);
+  const dx = Math.abs(bx - ax), dy = Math.abs(by - ay);
+  const dz = h(b) - h(a);
+  const flat = (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
+  const straight = (dx === 2 && dy === 0) || (dx === 0 && dy === 2);
+  let why = [];
+  if (seen.has(b)) why.push("revisit");
+  if (!(flat && dz === 0) && !(straight && Math.abs(dz) === 1)) why.push("not a knight move at these heights");
+  let score, type;
+  if (dz === 0) { score = s + n; type = "+" + n; }
+  else if (dz === 1) { score = s * n; type = "×" + n; }
+  else { type = "÷" + n; if (s % n !== 0) { why.push("not divisible"); score = s / n; } else score = s / n; }
+  const rec = mustRecord(n);
+  if (rec !== null && isTarget(b) !== rec) why.push(rec ? "must land on number" : "can't land on number");
+  if (rec && isTarget(b) && score !== NUMBERS[b]) why.push(`score ${score} ≠ ${NUMBERS[b]}`);
+  return { ok: why.length === 0, score, type, why };
+}
+
+// Replay whole path (towers may have changed)
+function replay() {
+  let s = 0; const seen = new Set([START]); const steps = [];
+  for (let i = 1; i < path.length; i++) {
+    const r = evalHop(path[i - 1], path[i], i, s, seen);
+    steps.push({ to: path[i], ...r });
+    s = r.score; seen.add(path[i]);
+  }
+  return { steps, score: s, seen };
+}
+
+function legalMoves(state) {
+  const cur = path[path.length - 1];
+  const [x, y] = cur.split(",").map(Number);
+  const n = path.length;
+  const out = {};
+  for (const [dx, dy] of [...FLAT, ...STRAIGHT]) {
+    const nx = x + dx, ny = y + dy;
+    if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+    const k = key(nx, ny);
+    const r = evalHop(cur, k, n, state.score, state.seen);
+    if (r.ok) out[k] = r;
+  }
+  return out;
+}
+
+function render() {
+  const state = replay();
+  const legal = legalMoves(state);
+  const hopIdx = {}; path.forEach((k, i) => hopIdx[k] = i);
+  const bad = {}; state.steps.forEach((st, i) => { if (!st.ok) bad[path[i + 1]] = true; });
+  const towerSquares = new Set(Object.values(towerLoc));
+  const showRid = $("rid").checked;
+
+  const b = $("board"); b.innerHTML = "";
+  for (let r = 0; r < N; r++) {
+    const y = N - 1 - r;
+    const lab = document.createElement("div"); lab.className = "lbl"; lab.textContent = y; b.appendChild(lab);
+    for (let x = 0; x < N; x++) {
+      const k = key(x, y);
+      const d = document.createElement("div"); d.className = "cell";
+      if (k in hopIdx) d.classList.add("visited");
+      if (k === path[path.length - 1]) d.classList.add("cur");
+      if (!towerMode && k in legal) d.classList.add("legal");
+      if (bad[k]) d.classList.add("bad");
+      // region walls
+      const t = TOWER_ID[k], W = "3px solid var(--wall)";
+      if (x === 0 || TOWER_ID[key(x - 1, y)] !== t) d.style.borderLeft = W;
+      if (x === N - 1 || TOWER_ID[key(x + 1, y)] !== t) d.style.borderRight = W;
+      if (y === N - 1 || TOWER_ID[key(x, y + 1)] !== t) d.style.borderTop = W;
+      if (y === 0 || TOWER_ID[key(x, y - 1)] !== t) d.style.borderBottom = W;
+      if (towerSquares.has(k)) d.classList.add("tower");
+      let html = "";
+      if (k in NUMBERS) html += `<span class="num">${NUMBERS[k]}</span>`;
+      else if (k in hopIdx && hopIdx[k] > 0) html += `<span class="wrote">${state.steps[hopIdx[k] - 1].score}</span>`;
+      if (k in hopIdx) html += `<span class="hop">${hopIdx[k]}</span>`;
+      if (towerSquares.has(k)) html += `<span class="tw">TWR</span>`;
+      if (!towerMode && k in legal) html += `<span class="preview">${legal[k].type}→${legal[k].score}</span>`;
+      if (showRid) html += `<span class="rid">${t}</span>`;
+      d.innerHTML = html;
+      d.title = `(${x},${y}) region ${t}`;
+      d.onclick = () => clickCell(k, legal, state);
+      b.appendChild(d);
+    }
+  }
+  b.appendChild(document.createElement("div"));
+  for (let x = 0; x < N; x++) { const l = document.createElement("div"); l.className = "lbl"; l.textContent = x; b.appendChild(l); }
+
+  $("mv").textContent = path.length - 1;
+  $("sc").textContent = state.score;
+  $("ahead").textContent = future.length ? ` / ${path.length - 1 + future.length}` : "";
+  $("tcount").textContent = Object.keys(towerLoc).length;
+  $("towerMode").classList.toggle("on", towerMode);
+  const nLegal = Object.keys(legal).length;
+  $("msg").textContent = towerMode ? "Tower mode: click a cell." :
+    nLegal ? `${nLegal} legal hop(s) for move ${path.length}` : "No legal hops (with current towers).";
+
+  const tb = $("steps"); tb.innerHTML = "";
+  state.steps.forEach((st, i) => {
+    const tr = document.createElement("tr"); if (!st.ok) tr.className = "bad";
+    const [x, y] = st.to.split(",");
+    tr.innerHTML = `<td>${i + 1}</td><td>(${x},${y})</td><td>${st.type}</td><td>${st.score}${st.ok ? "" : " ⚠ " + st.why.join(", ")}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function clickCell(k, legal, state) {
+  if (towerMode) {
+    const t = TOWER_ID[k];
+    if (towerLoc[t] === k) delete towerLoc[t]; else towerLoc[t] = k;
+  } else if (k in legal || ($("free").checked && !state.seen.has(k))) {
+    // same hop as the next one in the redo stack keeps it; a different hop drops it
+    if (future.length && future[future.length - 1] === k) future.pop(); else future = [];
+    path.push(k);
+  }
+  render();
+}
+
+function back() { if (path.length > 1) future.push(path.pop()); render(); }
+function fwd() { if (future.length) path.push(future.pop()); render(); }
+function toStart() { while (path.length > 1) future.push(path.pop()); render(); }
+function toEnd() { while (future.length) path.push(future.pop()); render(); }
+$("undo").onclick = back;
+$("redo").onclick = fwd;
+$("reset").onclick = () => { path = [START]; future = []; towerLoc = {}; render(); };
+$("towerMode").onclick = () => { towerMode = !towerMode; render(); };
+$("loadSol").onclick = () => {
+  path = [START];
+  future = SOLUTION.path.slice(1).reverse();
+  towerLoc = { ...SOLUTION.towers };
+  $("K").value = SOLUTION.K;
+  render();
+};
+$("preset").onclick = () => {
+  path = [START];
+  future = ["6,2", "4,2", "2,1"];
+  towerLoc = { 10: "0,0", 11: "2,1", 8: "4,2" };
+  render();
+};
+$("K").oninput = render;
+$("rid").onchange = render;
+$("free").onchange = render;
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowLeft" || e.key === "z" || e.key === "Backspace") { e.preventDefault(); back(); }
+  if (e.key === "ArrowRight") { e.preventDefault(); fwd(); }
+  if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); toStart(); }
+  if (e.key === "End" || e.key === "ArrowDown") { e.preventDefault(); toEnd(); }
+  if (e.key === "t") $("towerMode").click();
+});
+render();
+</script>
+</body>
+</html>
